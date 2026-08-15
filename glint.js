@@ -416,11 +416,16 @@
       })
       .then(function (sealed) {
         var header = buildHeader(0, sealed.cipher.length, sealed.salt, sealed.iv);
-        var framed = new Uint8Array(header.length + sealed.cipher.length);
-        framed.set(header, 0);
-        framed.set(sealed.cipher, header.length);
 
-        var coded = rsEncode(framed, parity);
+        // The header gets its OWN Reed-Solomon codeword rather than sharing
+        // the first one with the ciphertext. The decoder must recover it
+        // before it knows how long anything else is, so it cannot be spread
+        // across a codeword whose length is only knowable afterwards.
+        var codedHeader = rsEncode(header, parity);
+        var codedBody = rsEncode(sealed.cipher, parity);
+        var coded = new Uint8Array(codedHeader.length + codedBody.length);
+        coded.set(codedHeader, 0);
+        coded.set(codedBody, codedHeader.length);
         var needed = coded.length * 8;
 
         var width, height, source;
@@ -503,16 +508,21 @@
     var headerBlock = rsDecode(raw.subarray(0, headerBlockLen), parity, HEADER_BYTES);
     var header = parseHeader(headerBlock.data);
 
-    var framedLength = HEADER_BYTES + header.length;
     var chunk = 255 - parity;
-    var codedLength = 0;
-    for (var remaining = framedLength; remaining > 0; remaining -= chunk) {
-      codedLength += Math.min(chunk, remaining) + parity;
+    var bodyCodedLength = 0;
+    for (var remaining = header.length; remaining > 0; remaining -= chunk) {
+      bodyCodedLength += Math.min(chunk, remaining) + parity;
     }
-    if (codedLength > raw.length) throw new Error('This image is missing part of the data.');
+    if (headerBlockLen + bodyCodedLength > raw.length) {
+      throw new Error('This image is missing part of the data.');
+    }
 
-    var recovered = rsDecode(raw.subarray(0, codedLength), parity, framedLength);
-    var cipher = recovered.data.subarray(HEADER_BYTES);
+    var recovered = rsDecode(
+      raw.subarray(headerBlockLen, headerBlockLen + bodyCodedLength), parity, header.length);
+    var cipher = recovered.data;
+    // Header repairs count too: reporting only the body made damage to the
+    // header look like a clean read.
+    var totalCorrected = headerBlock.corrected + recovered.corrected;
 
     return deriveKey(passphrase, header.salt)
       .then(function (key) {
@@ -525,7 +535,7 @@
         return inflate(new Uint8Array(buffer));
       })
       .then(function (plain) {
-        return { bytes: plain, corrected: recovered.corrected };
+        return { bytes: plain, corrected: totalCorrected };
       });
   }
 

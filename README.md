@@ -91,18 +91,59 @@ node test/container.js   # round-trip, tamper, recovery
 node test/bench.js       # throughput on your hardware
 ```
 
-Current status: **2142 checks passing** — 10 official RFC vectors, 2111
-Shamir checks, 21 container tests. The PRF path is verified end to end
-against a Chrome virtual authenticator with `hasPrf`, covering enrolment,
-determinism, salt separation, seal, open, and both refusal cases.
+```bash
+node test/image.js       # image codec round-trip
+```
 
-Two bugs found this way, neither of which a round-trip test would have
-caught, because the code agreed with itself:
+Current status: **2147 checks passing** — 10 official RFC vectors, 2111
+Shamir checks, 21 container tests, 5 image tests. The PRF path is verified
+against a Chrome virtual authenticator with `hasPrf` and confirmed on real
+hardware (YubiKey 5), covering enrolment, determinism, salt separation,
+seal, open, and both refusal cases.
+
+Four bugs found this way, none of which a round-trip test would have caught,
+because in each case the code agreed with itself:
 
 - **Poly1305 with 26-bit limbs** overflows JavaScript's 53-bit floats and
   produces plausible but wrong tags. Only the RFC vectors caught it.
 - **The header binding was documented but not implemented.** The downgrade
   test passed only because the edited profile was not on a whitelist.
+- **The image encoder and decoder disagreed on framing.** The encoder wrote
+  one continuous Reed-Solomon stream; the decoder read the header as a
+  standalone codeword. Nothing decoded until the header got its own codeword.
+- **Correction counts only reported the body.** Damage to the header was
+  repaired silently, so a badly degraded image looked like a clean read.
+
+A note on the hardware run: real YubiKey credential ids are 48 bytes, while
+the virtual authenticator issued 32. The slot field is length-prefixed, so
+this passed unnoticed — a hard-coded 32 would have worked perfectly in
+emulation and corrupted every real file.
+
+## Image transport, measured
+
+`glint.js` hides the payload in mid-frequency DCT coefficients on JPEG's own
+8×8 block grid, so quantisation blurs the signal instead of erasing it.
+Measured with a real JPEG codec at 224×224 (parity 64, so 32 correctable
+bytes per codeword):
+
+| Channel | Result |
+| --- | --- |
+| JPEG quality 90 → 20 | recovered, **zero** corrections needed |
+| Saved twice (q85 then q75) | recovered, zero corrections |
+| Downscaled 50% and back | recovered, zero corrections |
+| Top 18% blacked out | recovered, 31 corrections |
+| 0.5% of pixels blown white | recovered, 44 corrections |
+| JPEG quality 15 | lost |
+| Top 36% blacked out | lost |
+| 2% of pixels blown white | lost |
+| Shifted by 3px | lost — the block grid must line up |
+
+Two things worth knowing. **Contiguous damage is survivable; sprinkled damage
+is worse than it looks** — a blown pixel perturbs its whole block, so noise
+scattered at 2% touches nearly every codeword at once, which no amount of
+interleaving fixes. And **the grid must be aligned**: a crop that is not a
+multiple of 8 pixels destroys the payload, so this rides through
+recompression but not through arbitrary cropping.
 
 ## Speed
 
