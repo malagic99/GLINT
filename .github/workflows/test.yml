@@ -23,3 +23,5 @@ jobs:
 
       - name: Container round-trip, tamper and recovery
         run: node test/container.js
+      - name: Image codec round-trip
+        run: node test/image.js
