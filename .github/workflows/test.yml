@@ -1,0 +1,25 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: RFC test vectors (scrypt, ChaCha20-Poly1305)
+        run: node test/vectors.js
+
+      - name: Shamir secret sharing
+        run: node test/shamir.js
+
+      - name: Container round-trip, tamper and recovery
+        run: node test/container.js
