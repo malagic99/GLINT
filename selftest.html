@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GLINT — security key dry run</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; padding: 40px 20px;
+      background: #04050d; color: #f2f0ea;
+      font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    }
+    main { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; margin: 0 0 8px; }
+    p.lede { color: #a4a2b6; margin: 0 0 28px; }
+    button {
+      font: inherit; font-weight: 500; color: #fff; cursor: pointer;
+      background: linear-gradient(120deg, #EABA01, #FD0B04 36%, #752A90 71%, #060C83);
+      border: 0; border-radius: 10px; padding: 12px 20px;
+    }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    #log { margin-top: 26px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88rem; }
+    .row { padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.07); display: flex; gap: 10px; }
+    .ok { color: #7ee787; } .bad { color: #ff9d94; } .info { color: #a4a2b6; }
+    .note {
+      margin-top: 28px; padding: 14px 16px; font-size: .9rem; color: #a4a2b6;
+      border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
+    }
+    code { color: #f2f0ea; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Security key dry run</h1>
+  <p class="lede">
+    Exercises the whole scheme end to end with a throwaway payload: enrol the key,
+    seal a file, then open it three separate ways. Run this before trusting
+    anything you care about — an untested recovery path is the same as no
+    recovery path.
+  </p>
+
+  <button id="run">Run the dry run</button>
+  <div id="log"></div>
+
+  <div class="note">
+    You will be asked to touch the key several times: once to enrol, once to
+    seal, and once to open. That is expected — each touch is a separate PRF
+    evaluation, and none of them can be skipped or replayed.
+    <br /><br />
+    Requires HTTPS or localhost, and a key with FIDO2 <code>hmac-secret</code>
+    (YubiKey 5 series and later).
+  </div>
+</main>
+
+<script src="crypto.js"></script>
+<script src="shamir.js"></script>
+<script src="container.js"></script>
+<script src="webauthn.js"></script>
+<script>
+(function () {
+  'use strict';
+  var log = document.getElementById('log');
+  var button = document.getElementById('run');
+
+  function line(state, text) {
+    var row = document.createElement('div');
+    row.className = 'row';
+    var mark = document.createElement('span');
+    mark.className = state;
+    mark.textContent = state === 'ok' ? 'PASS' : state === 'bad' ? 'FAIL' : '····';
+    var label = document.createElement('span');
+    label.textContent = text;
+    row.appendChild(mark);
+    row.appendChild(label);
+    log.appendChild(row);
+    return row;
+  }
+
+  var failures = 0;
+  function check(condition, text) {
+    if (!condition) failures++;
+    line(condition ? 'ok' : 'bad', text);
+  }
+
+  var hex = function (bytes) {
+    return Array.from(bytes).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  };
+
+  button.addEventListener('click', function () {
+    button.disabled = true;
+    log.innerHTML = '';
+    failures = 0;
+    run().catch(function (error) {
+      line('bad', 'Stopped: ' + error.message);
+      failures++;
+    }).then(function () {
+      line('info', failures ? failures + ' problem(s) — do not trust real data to this yet.'
+                            : 'Everything passed. Recovery works without the key.');
+      button.disabled = false;
+    });
+  });
+
+  function run() {
+    var passphrase = 'dry-run-' + Math.random().toString(36).slice(2);
+    var message = 'GLINT dry run ' + new Date().toISOString();
+    var payload = new TextEncoder().encode(message);
+    var credential, sealed, shares;
+
+    check(GLINTToken.isAvailable(), 'WebAuthn available in a secure context');
+
+    line('info', 'Touch your key to enrol…');
+    return GLINTToken.register({ userName: 'glint-dry-run' })
+      .then(function (result) {
+        credential = result;
+        check(result.prfEnabled, 'Key supports the PRF extension (hmac-secret)');
+        check(result.credentialId.length > 0, 'Credential id received (' + result.credentialId.length + ' bytes)');
+
+        line('info', 'Touch your key to seal…');
+        return GLINTBox.seal(payload, {
+          passphrase: passphrase,
+          credentialId: credential.credentialId,
+          tokenSecret: function (slotSalt) {
+            return GLINTToken.prfSalt(slotSalt).then(function (salt) {
+              return GLINTToken.evaluate(credential.credentialId, salt);
+            });
+          },
+          profile: 'fast'
+        });
+      })
+      .then(function (result) {
+        sealed = result;
+        var info = GLINTBox.inspect(sealed.file);
+        check(info.needsToken, 'Sealed file records that a security key is required');
+        check(hex(info.credentialId) === hex(credential.credentialId), 'File points at the right credential');
+        check(info.hasRecoverySlot, 'Recovery slot present');
+
+        line('info', 'Touch your key to open…');
+        return GLINTBox.open(sealed.file, {
+          passphrase: passphrase,
+          tokenSecret: function (slotSalt) {
+            return GLINTToken.prfSalt(slotSalt).then(function (salt) {
+              return GLINTToken.evaluate(credential.credentialId, salt);
+            });
+          }
+        });
+      })
+      .then(function (opened) {
+        check(new TextDecoder().decode(opened) === message, 'Opened with passphrase + key');
+
+        // The passphrase alone must not be enough.
+        return GLINTBox.open(sealed.file, { passphrase: passphrase })
+          .then(function () { return false; }, function () { return true; });
+      })
+      .then(function (rejected) {
+        check(rejected, 'Passphrase alone is refused (the key truly binds it)');
+
+        shares = GLINTShamir.split(sealed.recoveryKey, 2, 3);
+        check(shares.length === 3, 'Recovery key split into 3 shares, any 2 needed');
+
+        var pairs = [[0, 1], [0, 2], [1, 2]];
+        return pairs.reduce(function (chain, pair) {
+          return chain.then(function () {
+            var key = GLINTShamir.combine([shares[pair[0]], shares[pair[1]]]);
+            return GLINTBox.open(sealed.file, { recoveryKey: key }).then(function (out) {
+              check(new TextDecoder().decode(out) === message,
+                'Recovered with shares ' + (pair[0] + 1) + '+' + (pair[1] + 1) + ' — no key, no passphrase');
+            });
+          });
+        }, Promise.resolve());
+      })
+      .then(function () {
+        // One share must be useless.
+        return GLINTBox.open(sealed.file, { recoveryKey: shares[0].subarray(1) })
+          .then(function () { return false; }, function () { return true; });
+      })
+      .then(function (rejected) {
+        check(rejected, 'A single share opens nothing');
+      });
+  }
+})();
+</script>
+</body>
+</html>
