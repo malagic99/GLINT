@@ -26,9 +26,28 @@ leak.
   HMAC-SHA256, not ECDSA, so nothing in the key path is quantum-vulnerable.
 - **No dependencies.** Every primitive is here or in WebCrypto.
 
-## Try it before you trust it
+## Using it
 
-Serve the folder and open `selftest.html` — WebAuthn needs HTTPS or localhost:
+Serve the folder — WebAuthn needs HTTPS or localhost, so opening the files
+directly will not work:
+
+```bash
+python3 -m http.server 8000
+```
+
+- **http://localhost:8000/** — lock and unlock files
+- **http://localhost:8000/selftest.html** — the dry run described below
+
+The interface has three tabs. **Lock** encrypts a file or a typed message and
+downloads a `.glintbox`, then shows the three recovery shares as text and as
+QR codes (printable). **Unlock** takes a `.glintbox` and opens it with either
+your passphrase and key, or any two recovery shares. **Speed** measures key
+derivation and cipher throughput on your own machine.
+
+The original filename travels inside the encrypted payload, so it is not
+visible on the sealed file either.
+
+## Try it before you trust it
 
 ```bash
 python3 -m http.server 8000   # then http://localhost:8000/selftest.html
@@ -81,6 +100,8 @@ trivially crackable key.
 | `webauthn.js` | Hardware key material via the PRF extension |
 | `glint.js` | Image transport: data in DCT blocks, Reed-Solomon protected |
 | `selftest.html` | End-to-end dry run against a real key |
+| `index.html`, `app.js`, `app.css` | The interface |
+| `qrcode.js` | QR encoder, for printing recovery shares |
 
 ## Testing
 
@@ -94,6 +115,12 @@ node test/bench.js       # throughput on your hardware
 ```bash
 node test/image.js       # image codec round-trip
 ```
+
+The interface itself is driven end to end in a real browser with a virtual
+authenticator: enrol, lock a file, unlock it with passphrase and key, unlock
+it again with two recovery shares alone, and confirm a wrong passphrase is
+refused — checking each time that the recovered bytes are identical to the
+original.
 
 Current status: **2147 checks passing** — 10 official RFC vectors, 2111
 Shamir checks, 21 container tests, 5 image tests. The PRF path is verified

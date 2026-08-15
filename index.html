@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GLINT — encrypted personal storage</title>
+  <meta name="description" content="Encrypt files with a passphrase and a hardware security key. Recovery is split 2-of-3. Runs entirely in your browser." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2304050d'/%3E%3Cpath d='M8 3.2 12.4 6v4L8 12.8 3.6 10V6z' fill='none' stroke='%23EABA01' stroke-width='1.3'/%3E%3Ccircle cx='8' cy='8' r='1.6' fill='%23FD0B04'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+<main class="wrap">
+  <header class="head">
+    <h1>GLINT</h1>
+    <p class="lede">
+      Files locked with a passphrase <em>and</em> a hardware key, with recovery
+      split three ways so no single loss is fatal. Nothing is uploaded — the
+      encryption happens in this page.
+    </p>
+  </header>
+
+  <div class="tabs" role="tablist" aria-label="Mode">
+    <button role="tab" class="tab is-active" aria-selected="true" data-pane="lock">Lock</button>
+    <button role="tab" class="tab" aria-selected="false" data-pane="unlock">Unlock</button>
+    <button role="tab" class="tab" aria-selected="false" data-pane="speed">Speed</button>
+  </div>
+
+  <!-- ------------------------------------------------------------ lock -->
+  <section class="panel" id="pane-lock">
+    <label class="drop" id="lock-drop" for="lock-file">Drop a file here, or click to choose</label>
+    <input type="file" id="lock-file" class="hidden-input" />
+
+    <label class="field">
+      <span>…or type a message</span>
+      <textarea id="lock-text" rows="3" placeholder="Anything you would rather not lose or leak"></textarea>
+    </label>
+
+    <label class="field">
+      <span>Passphrase</span>
+      <input type="password" id="lock-pass" autocomplete="new-password"
+             placeholder="Several random words beat one clever word" />
+    </label>
+
+    <div class="key-row">
+      <label class="check">
+        <input type="checkbox" id="use-key" checked />
+        <span>Require a security key</span>
+      </label>
+      <span class="key-state" id="key-state">No key enrolled</span>
+      <button type="button" class="btn small" id="enrol">Enrol security key</button>
+    </div>
+
+    <label class="field">
+      <span>Strength</span>
+      <select id="profile">
+        <option value="fast">Fast — 16 MB derivation, single cipher</option>
+        <option value="strong" selected>Strong — 128 MB derivation, cipher cascade</option>
+        <option value="paranoid">Paranoid — 1 GB derivation, cipher cascade</option>
+      </select>
+    </label>
+
+    <button type="button" class="btn primary" id="lock">Encrypt and download</button>
+    <p class="status" id="lock-status"></p>
+  </section>
+
+  <!-- ---------------------------------------------------------- shares -->
+  <section class="panel shares-panel" id="shares-panel" hidden>
+    <h2>Recovery shares — save these now</h2>
+    <p class="warn">
+      Any <strong>two</strong> of the three open the file with no passphrase and
+      no security key. One alone reveals nothing. They are shown once and are not
+      stored anywhere: if you lose your passphrase or your key and have not kept
+      at least two shares, the data is gone permanently.
+    </p>
+    <p class="warn">Keep them in three places that cannot be destroyed together.</p>
+    <div class="shares" id="shares"></div>
+    <button type="button" class="btn small" id="print-shares">Print these</button>
+  </section>
+
+  <!-- ---------------------------------------------------------- unlock -->
+  <section class="panel" id="pane-unlock" hidden>
+    <label class="drop" id="unlock-drop" for="unlock-file">Drop a .glintbox file here, or click to choose</label>
+    <input type="file" id="unlock-file" class="hidden-input" accept=".glintbox" />
+    <p class="facts" id="file-facts" hidden></p>
+
+    <label class="check standalone">
+      <input type="checkbox" id="recovery-toggle" />
+      <span>I have lost my passphrase or key — use recovery shares</span>
+    </label>
+
+    <div id="passphrase-fields">
+      <label class="field">
+        <span>Passphrase</span>
+        <input type="password" id="unlock-pass" autocomplete="current-password" />
+      </label>
+    </div>
+
+    <div id="recovery-fields" hidden>
+      <label class="field">
+        <span>Share one</span>
+        <textarea id="share-a" rows="2" placeholder="GLINT1:…" spellcheck="false"></textarea>
+      </label>
+      <label class="field">
+        <span>Share two</span>
+        <textarea id="share-b" rows="2" placeholder="GLINT1:…" spellcheck="false"></textarea>
+      </label>
+    </div>
+
+    <button type="button" class="btn primary" id="unlock">Decrypt and download</button>
+    <p class="status" id="unlock-status"></p>
+  </section>
+
+  <!-- ----------------------------------------------------------- speed -->
+  <section class="panel" id="pane-speed" hidden>
+    <p class="lede small">
+      Measures this machine. Key derivation is a fixed cost per file — it is
+      meant to be slow, because that is what makes guessing your passphrase
+      expensive. Cipher throughput is what scales with file size.
+    </p>
+    <button type="button" class="btn" id="bench">Run benchmark</button>
+    <pre class="bench" id="bench-out" hidden></pre>
+  </section>
+
+  <footer class="foot">
+    No accounts, no uploads, no telemetry. Verified by 2147 tests, including the
+    official RFC vectors for every primitive.
+  </footer>
+</main>
+
+<script src="crypto.js"></script>
+<script src="shamir.js"></script>
+<script src="container.js"></script>
+<script src="webauthn.js"></script>
+<script src="qrcode.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
