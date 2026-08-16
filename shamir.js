@@ -103,5 +103,116 @@
     return secret;
   }
 
-  global.GLINTShamir = { split: split, combine: combine };
+  /* ------------------------------------------------- share transcription */
+
+  // A share is useless if it is mistyped and you cannot tell. Encoded shares
+  // therefore carry a CRC over the bytes, plus a short tag identifying which
+  // file they belong to, so a share can be checked on its own.
+  //
+  // What this proves: the text was transcribed correctly, and it was issued
+  // for this file. What it cannot prove: that the share is cryptographically
+  // valid. One share carries no information about the secret — that is the
+  // whole point of Shamir — so nothing short of assembling two can confirm it.
+
+  var SHARE_PREFIX = 'GLINT1:';
+  var TAG_BYTES = 6;
+
+  function crc16(bytes) {
+    var crc = 0xffff;
+    for (var i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i] << 8;
+      for (var bit = 0; bit < 8; bit++) {
+        crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+      }
+    }
+    return crc;
+  }
+
+  function toBase64Url(bytes) {
+    var binary = '';
+    for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return global.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function fromBase64Url(text) {
+    var padded = text.replace(/-/g, '+').replace(/_/g, '/');
+    while (padded.length % 4) padded += '=';
+    var binary = global.atob(padded);
+    var out = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  }
+
+  /** Identifies the file a share belongs to. Derived from public header bytes. */
+  function fileTag(headerCore) {
+    return global.crypto.subtle.digest('SHA-256', headerCore).then(function (hash) {
+      return new Uint8Array(hash).slice(0, TAG_BYTES);
+    });
+  }
+
+  function encodeShare(share, tag) {
+    tag = tag || new Uint8Array(TAG_BYTES);
+    var body = new Uint8Array(share.length + TAG_BYTES);
+    body.set(share, 0);
+    body.set(tag, share.length);
+    var sum = crc16(body);
+    var full = new Uint8Array(body.length + 2);
+    full.set(body, 0);
+    full[body.length] = (sum >> 8) & 0xff;
+    full[body.length + 1] = sum & 0xff;
+    return SHARE_PREFIX + toBase64Url(full);
+  }
+
+  /**
+   * decodeShare(text) -> {share, tag, index, legacy}
+   * Throws with a plain-language reason when the text is damaged.
+   */
+  function decodeShare(text) {
+    var trimmed = String(text).trim().replace(/\s+/g, '');
+    if (trimmed.indexOf(SHARE_PREFIX) === 0) trimmed = trimmed.slice(SHARE_PREFIX.length);
+    if (!trimmed) throw new Error('That share is empty.');
+
+    var bytes;
+    try {
+      bytes = fromBase64Url(trimmed);
+    } catch (e) {
+      throw new Error('That share contains characters that are not part of a share.');
+    }
+
+    // Shares written before checksums existed are the bare secret bytes.
+    if (bytes.length > 2 && bytes.length !== 33 + TAG_BYTES + 2) {
+      if (bytes.length === 33) return { share: bytes, tag: null, index: bytes[0], legacy: true };
+      throw new Error('That share is the wrong length — it looks truncated or run together.');
+    }
+    if (bytes.length === 33) return { share: bytes, tag: null, index: bytes[0], legacy: true };
+
+    var body = bytes.subarray(0, bytes.length - 2);
+    var expected = (bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1];
+    if (crc16(body) !== expected) {
+      throw new Error('That share has a typo in it — the checksum does not match.');
+    }
+    return {
+      share: body.slice(0, body.length - TAG_BYTES),
+      tag: body.slice(body.length - TAG_BYTES),
+      index: body[0],
+      legacy: false
+    };
+  }
+
+  function sameTag(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    var diff = 0;
+    for (var i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+    return diff === 0;
+  }
+
+  global.GLINTShamir = {
+    split: split,
+    combine: combine,
+    encodeShare: encodeShare,
+    decodeShare: decodeShare,
+    fileTag: fileTag,
+    sameTag: sameTag,
+    crc16: crc16
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

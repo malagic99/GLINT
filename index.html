@@ -22,6 +22,7 @@
   <div class="tabs" role="tablist" aria-label="Mode">
     <button role="tab" class="tab is-active" aria-selected="true" data-pane="lock">Lock</button>
     <button role="tab" class="tab" aria-selected="false" data-pane="unlock">Unlock</button>
+    <button role="tab" class="tab" aria-selected="false" data-pane="image">Image</button>
     <button role="tab" class="tab" aria-selected="false" data-pane="speed">Speed</button>
   </div>
 
@@ -29,6 +30,7 @@
   <section class="panel" id="pane-lock">
     <label class="drop" id="lock-drop" for="lock-file">Drop a file here, or click to choose</label>
     <input type="file" id="lock-file" class="hidden-input" />
+    <p class="hint" id="size-warning" hidden></p>
 
     <label class="field">
       <span>…or type a message</span>
@@ -40,6 +42,11 @@
       <input type="password" id="lock-pass" autocomplete="new-password"
              placeholder="Several random words beat one clever word" />
     </label>
+    <div class="strength-row">
+      <span class="strength" id="strength-read">Nothing entered yet.</span>
+      <button type="button" class="btn small" id="generate-pass">Generate a strong one</button>
+      <button type="button" class="btn small" id="show-pass">Show</button>
+    </div>
 
     <div class="key-row">
       <label class="check">
@@ -108,6 +115,72 @@
 
     <button type="button" class="btn primary" id="unlock">Decrypt and download</button>
     <p class="status" id="unlock-status"></p>
+
+    <h3 class="sub-head">Check a single share</h3>
+    <p class="hint">
+      Confirms a share was transcribed correctly and belongs to the file above.
+      It cannot confirm the share is cryptographically valid — one share carries
+      no information about the secret, which is the point of splitting it.
+    </p>
+    <label class="field">
+      <span>Share</span>
+      <textarea id="check-share" rows="2" placeholder="GLINT1:…" spellcheck="false"></textarea>
+    </label>
+    <button type="button" class="btn" id="check-share-btn">Check it</button>
+    <p class="status" id="check-status"></p>
+  </section>
+
+  <!-- ----------------------------------------------------------- image -->
+  <section class="panel" id="pane-image" hidden>
+    <p class="lede small">
+      Hides encrypted data in the mid-frequency DCT coefficients of an image,
+      on JPEG's own 8×8 grid — so it survives being screenshotted, re-saved and
+      recompressed. Measured to hold through JPEG quality 20. It does
+      <em>not</em> survive cropping that shifts the grid.
+    </p>
+
+    <label class="field">
+      <span>Message to hide</span>
+      <textarea id="img-text" rows="3" placeholder="A note, a key, a recovery share…"></textarea>
+    </label>
+
+    <label class="field">
+      <span>Passphrase</span>
+      <input type="password" id="img-pass" autocomplete="new-password" />
+    </label>
+
+    <label class="drop" id="img-carrier-drop" for="img-carrier">
+      Optional: drop a photo to hide the data inside it
+    </label>
+    <input type="file" id="img-carrier" class="hidden-input" accept="image/*" />
+
+    <label class="field">
+      <span>Strength of the signal — <span id="amp-value">18</span></span>
+      <input type="range" id="img-amp" min="6" max="40" value="18" />
+    </label>
+    <p class="hint">
+      Lower is less visible but breaks up sooner under compression. Higher
+      survives more but shows as faint texture.
+    </p>
+
+    <button type="button" class="btn primary" id="img-encode">Create image</button>
+    <p class="status" id="img-status"></p>
+
+    <div id="img-result" hidden>
+      <canvas id="img-canvas" class="preview-canvas"></canvas>
+      <button type="button" class="btn small" id="img-download">Download PNG</button>
+    </div>
+
+    <h3 class="sub-head">Read one back</h3>
+    <label class="drop" id="img-read-drop" for="img-read">Drop a GLINT image here</label>
+    <input type="file" id="img-read" class="hidden-input" accept="image/*" />
+    <label class="field">
+      <span>Passphrase</span>
+      <input type="password" id="img-read-pass" autocomplete="current-password" />
+    </label>
+    <button type="button" class="btn" id="img-decode">Read it</button>
+    <p class="status" id="img-read-status"></p>
+    <textarea id="img-out" rows="4" readonly hidden></textarea>
   </section>
 
   <!-- ----------------------------------------------------------- speed -->
@@ -127,10 +200,12 @@
   </footer>
 </main>
 
+<script src="passphrase.js"></script>
 <script src="crypto.js"></script>
 <script src="shamir.js"></script>
 <script src="container.js"></script>
 <script src="webauthn.js"></script>
+<script src="glint.js"></script>
 <script src="qrcode.js"></script>
 <script src="app.js"></script>
 </body>

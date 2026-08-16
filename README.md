@@ -20,8 +20,16 @@ leak.
   and that is information-theoretic — no amount of compute changes it.
 - **Cipher cascade.** ChaCha20 then AES-256-GCM under independent subkeys, so
   a break in one primitive is not a break of the file.
-- **Any file size.** Chunked STREAM construction: truncation, reordering and
-  chunk removal all fail authentication.
+- **Chunked and authenticated.** The STREAM construction means truncation,
+  reordering and chunk removal all fail authentication. Note the current
+  implementation holds the whole file in memory (see Limits), so size is
+  bounded by RAM, not by disk.
+- **Strong passphrases by default.** A built-in generator produces 90-bit
+  passphrases with provable entropy, and anything under 40 bits is refused
+  outright.
+- **Checkable recovery shares.** Each share carries a checksum and a tag
+  identifying its file, so a typo is caught immediately rather than at the
+  moment you need it.
 - **Post-quantum by construction.** Every key is symmetric. The token's PRF is
   HMAC-SHA256, not ECDSA, so nothing in the key path is quantum-vulnerable.
 - **No dependencies.** Every primitive is here or in WebCrypto.
@@ -38,11 +46,12 @@ python3 -m http.server 8000
 - **http://localhost:8000/** — lock and unlock files
 - **http://localhost:8000/selftest.html** — the dry run described below
 
-The interface has three tabs. **Lock** encrypts a file or a typed message and
+The interface has four tabs. **Lock** encrypts a file or a typed message and
 downloads a `.glintbox`, then shows the three recovery shares as text and as
 QR codes (printable). **Unlock** takes a `.glintbox` and opens it with either
-your passphrase and key, or any two recovery shares. **Speed** measures key
-derivation and cipher throughput on your own machine.
+your passphrase and key, or any two recovery shares. **Image** hides an encrypted message
+in a picture — either as a standalone code or inside a photo you supply.
+**Speed** measures key derivation and cipher throughput on your own machine.
 
 The original filename travels inside the encrypted payload, so it is not
 visible on the sealed file either.
@@ -96,10 +105,12 @@ trivially crackable key.
 | --- | --- |
 | `container.js` | The `.glintbox` format: key slots, streaming cascade |
 | `crypto.js` | scrypt and ChaCha20-Poly1305 (what WebCrypto lacks) |
-| `shamir.js` | Secret sharing over GF(256) |
+| `shamir.js` | Secret sharing over GF(256), plus share encoding |
+| `passphrase.js` | Passphrase generation and strength estimation |
 | `webauthn.js` | Hardware key material via the PRF extension |
 | `glint.js` | Image transport: data in DCT blocks, Reed-Solomon protected |
 | `selftest.html` | End-to-end dry run against a real key |
+| `conceal.html` | Hide encrypted data inside a photograph |
 | `index.html`, `app.js`, `app.css` | The interface |
 | `qrcode.js` | QR encoder, for printing recovery shares |
 
@@ -114,6 +125,8 @@ node test/bench.js       # throughput on your hardware
 
 ```bash
 node test/image.js       # image codec round-trip
+node test/shares.js      # share checksums and file tags
+node test/passphrase.js  # generator entropy and distribution
 ```
 
 The interface itself is driven end to end in a real browser with a virtual
@@ -122,8 +135,13 @@ it again with two recovery shares alone, and confirm a wrong passphrase is
 refused — checking each time that the recovered bytes are identical to the
 original.
 
-Current status: **2147 checks passing** — 10 official RFC vectors, 2111
-Shamir checks, 21 container tests, 5 image tests. The PRF path is verified
+Image mode is exercised in the browser too: a code is made, round-tripped
+through canvas JPEG encoding at quality 90/70/50/30, and decoded back — plus
+the same for a payload hidden in a carrier photo at quality 80.
+
+Current status: **2173 checks passing** — 10 official RFC vectors, 2111
+Shamir checks, 21 container tests, 9 image tests, 9 share tests, 13
+passphrase tests. The PRF path is verified
 against a Chrome virtual authenticator with `hasPrf` and confirmed on real
 hardware (YubiKey 5), covering enrolment, determinism, salt separation,
 seal, open, and both refusal cases.
@@ -165,6 +183,44 @@ bytes per codeword):
 | 2% of pixels blown white | lost |
 | Shifted by 3px | lost — the block grid must line up |
 
+### Hiding data in a photograph
+
+`conceal.html` is the focused tool for this: drop a photo, hide an encrypted
+message or file inside it, and see exactly what changed before you save.
+
+Two things keep it clean. **Perceptual masking** sets the amplitude per block
+from how busy that block is — quiet in flat sky where the eye would notice,
+louder in texture that hides it. And because the decoder only reads the *sign*
+of each coefficient, any block that already has the right sign with enough
+magnitude is **left completely untouched**, which is roughly half of them.
+
+Measured on a 1024×768 image with a large flat sky, at the balanced setting:
+
+| | Fixed amplitude | Masked + leave-alone |
+| --- | --- | --- |
+| Flat areas | mean 2.6, worst 8 | **mean 1.3, worst 5** |
+| Textured areas | mean 4.2 | mean 4.8 (more signal where it hides) |
+| PSNR | 35.5 dB | **39.2 dB** |
+| Survives | JPEG q50 | **JPEG q40** |
+
+Cleaner and more robust at once — the masking moves signal out of the places
+that betray it and into places that both hide it better and compress better.
+
+One honest limit: the worst single change in a nominally flat block was 16 of
+255 on a dithered gradient. Flipping a coefficient that already leans the wrong
+way means crossing zero, which costs its full magnitude plus the amplitude.
+That is a property of sign-based encoding, not something tuning fixes. The
+"Subtle" setting lowers it at the cost of needing a higher-quality save.
+
+Capacity scales with the picture: about 2.2 KB in a 1024×768 image, about
+35 KB in a 4000×3000 phone photo.
+
+**This is concealment, not undetectability.** The payload is encrypted with
+AES-256-GCM regardless, so the content is safe either way — but someone who
+suspects a payload and runs statistics over the DCT coefficients will see the
+modulation. It hides from a person looking at a photo, not from an analyst
+looking for a payload.
+
 Two things worth knowing. **Contiguous damage is survivable; sprinkled damage
 is worse than it looks** — a blown pixel perturbs its whole block, so noise
 scattered at 2% touches nearly every codeword at once, which no amount of
@@ -186,6 +242,50 @@ scale with size.
 For small files the derivation dominates — a one-second unlock is the point,
 not a defect. For large archives the cascade dominates: ChaCha20 runs around
 275 MB/s here against hardware AES-GCM's 500+ MB/s.
+
+## Passphrases
+
+Every other layer defends a secret a human chose, so the generator matters
+more than the cascade does. It builds words from syllables rather than a
+dictionary — 16 consonants x 4 vowels = exactly 64 syllables = 6 bits each,
+three syllables per word, five words = **90 bits**. Sampling is unbiased
+because 64 divides 256 evenly.
+
+A wordlist would be more memorable, but its entropy claim depends on the list
+being exactly what it says it is. This claim is provable from the code, and
+the tests check it: all 64 syllables appear, the distribution passes a
+chi-square test, and 5000 generated passphrases produce no collisions.
+
+The strength meter for typed passphrases is deliberately pessimistic and is
+**an estimate, not a promise** — real attackers use dictionaries and leaked
+corpora that no client-side function models well. Treat it as a floor.
+
+## Recovery shares
+
+Shares look like `GLINT1:` followed by 55 characters, and carry:
+
+- a **CRC** over the bytes — every single-character typo is caught, verified
+  across every position in the encoded string
+- a **6-byte file tag** — identifies which file the share belongs to
+
+The Unlock tab has a *Check a single share* tool that validates both. What it
+cannot do is confirm a share is cryptographically valid: one share carries no
+information about the secret, which is precisely the property that makes
+splitting worthwhile. Only assembling two proves that.
+
+Shares issued before checksums existed still decode, and are flagged as
+uncheckable.
+
+## Limits
+
+**Memory.** Encryption holds the file, a copy, the sealed chunks and the
+joined result — peak use is roughly **four times the file size**. A 1.5 GB
+file has been encrypted successfully on a machine with plenty of RAM; the
+same file will fail on a small one. The interface warns above 200 MB.
+Removing this needs streaming to disk, which is planned.
+
+**An earlier version of this README claimed "any file size, bounded only by
+disk".** That described the format, not the implementation, and was wrong.
 
 ## What this does not protect against
 

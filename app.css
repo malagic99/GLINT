@@ -130,3 +130,27 @@ button:focus-visible, .drop:focus-visible { outline: 2px solid #EABA01; outline-
   .share textarea { color: #000; background: #fff; border: 1px solid #999; }
   .warn, .shares-panel h2 { color: #000; }
 }
+
+.preview-canvas {
+  display: block; width: 100%; max-width: 300px; height: auto;
+  margin: 16px 0 12px; border-radius: 8px; image-rendering: pixelated;
+  border: 1px solid var(--line);
+}
+.sub-head {
+  font-size: .78rem; text-transform: uppercase; letter-spacing: .12em;
+  color: var(--dim); margin: 30px 0 14px; padding-top: 22px;
+  border-top: 1px solid var(--line-soft);
+}
+input[type="range"] { width: 100%; accent-color: #FD0B04; }
+.hint { font-size: .82rem; color: var(--dim); margin: -6px 0 16px; }
+
+.strength-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -6px 0 18px; }
+.strength { font-size: .82rem; color: var(--dim); margin-right: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.strength.weak { color: var(--bad); }
+.strength.fair { color: #f0c674; }
+.strength.strong, .strength.generated, .strength.very { color: var(--good); }
+.generated-pass {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95rem;
+  color: var(--good); background: var(--bg-input); border: 1px solid rgba(126,231,135,.35);
+  border-radius: 10px; padding: 10px 12px; margin: 0 0 14px; word-break: break-all;
+}
