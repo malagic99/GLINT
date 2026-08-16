@@ -428,6 +428,210 @@
       });
   }
 
+  /* --------------------------------------------------------- streaming */
+
+  /*
+   * The functions above hold the whole payload in memory. These stream it a
+   * chunk at a time, so peak use is one chunk regardless of file size.
+   *
+   * The payload length still has to be known up front, because it is part of
+   * the authenticated header — which is fine for a File, whose size is known.
+   */
+
+  // Re-cut an arbitrary stream into pieces of exactly `size` bytes, with a
+  // possibly-shorter final piece. Sources deliver whatever sizes they like.
+  async function* exactChunks(stream, size) {
+    var reader = stream.getReader();
+    var buffer = new Uint8Array(size);
+    var filled = 0;
+    while (true) {
+      var step = await reader.read();
+      if (step.done) break;
+      var input = step.value;
+      var offset = 0;
+      while (offset < input.length) {
+        var take = Math.min(size - filled, input.length - offset);
+        buffer.set(input.subarray(offset, offset + take), filled);
+        filled += take;
+        offset += take;
+        if (filled === size) {
+          yield buffer.slice(0, size);
+          filled = 0;
+        }
+      }
+    }
+    if (filled > 0) yield buffer.slice(0, filled);
+  }
+
+  // Prepend bytes to a stream without copying the stream's contents.
+  function withPrefix(prefix, stream) {
+    var emitted = false;
+    var reader = stream.getReader();
+    return new ReadableStream({
+      async pull(controller) {
+        if (!emitted) {
+          emitted = true;
+          if (prefix && prefix.length) { controller.enqueue(prefix); return; }
+        }
+        var step = await reader.read();
+        if (step.done) controller.close();
+        else controller.enqueue(step.value);
+      },
+      cancel(reason) { return reader.cancel(reason); }
+    });
+  }
+
+  /**
+   * sealStream({stream, length}, sink, options) -> {recoveryKey, profile, bytesWritten}
+   *
+   * `sink` needs a write(chunk) and a close(); a FileSystemWritableFileStream
+   * satisfies it directly, so the ciphertext goes to disk as it is produced.
+   */
+  async function sealStream(source, sink, options) {
+    options = options || {};
+    var profile = options.profile || 'strong';
+    if (!PROFILES[profile]) throw new Error('Unknown profile: ' + profile);
+    if (!options.passphrase && !options.tokenSecret) {
+      throw new Error('A passphrase or a security key is required.');
+    }
+
+    var params = PROFILES[profile];
+    var cascade = params.cascade;
+    var dataKey = randomBytes(KEY_BYTES);
+    var recoveryKey = randomBytes(KEY_BYTES);
+    var prefix = randomBytes(7);
+    var flags = (cascade ? FLAG_CASCADE : 0) | (options.tokenSecret ? FLAG_TOKEN : 0);
+
+    var pending = [
+      {
+        type: SLOT_PASSPHRASE, salt: randomBytes(16), nonce: randomBytes(12),
+        credentialId: options.credentialId || new Uint8Array(0)
+      },
+      { type: SLOT_RECOVERY, salt: randomBytes(16), nonce: randomBytes(12) }
+    ];
+    var core = buildCore(profile, flags, pending.map(slotMetaBytes), prefix, source.length);
+
+    async function wrap(slot, material) {
+      var raw = await material;
+      var key = await importAes(raw);
+      var wrapped = await subtle.encrypt(
+        { name: 'AES-GCM', iv: slot.nonce, additionalData: core }, key, dataKey);
+      return {
+        type: slot.type, salt: slot.salt, nonce: slot.nonce,
+        credentialId: slot.credentialId, wrapped: new Uint8Array(wrapped)
+      };
+    }
+
+    var slots = await Promise.all([
+      wrap(pending[0], resolveToken(options.tokenSecret, pending[0].salt)
+        .then(function (secret) {
+          return deriveSlotKey(options.passphrase, secret, pending[0].salt, profile);
+        })),
+      wrap(pending[1], hkdf(recoveryKey, pending[1].salt, 'glintbox/recovery', KEY_BYTES))
+    ]);
+
+    var header = buildHeader(profile, flags, slots, prefix, source.length);
+    await sink.write(header);
+    var written = header.length;
+
+    var keys = await payloadKeys(dataKey, cascade);
+    var chunkSize = 1 << params.chunkLog;
+    var chunkCount = Math.max(1, Math.ceil(source.length / chunkSize));
+    var index = 0;
+
+    for await (var piece of exactChunks(source.stream, chunkSize)) {
+      var isFinal = index === chunkCount - 1;
+      var sealed = await sealChunk(keys, prefix, index, isFinal, piece, cascade, core);
+      await sink.write(sealed);
+      written += sealed.length;
+      piece.fill(0);
+      index++;
+      if (options.onProgress) options.onProgress(index / chunkCount);
+    }
+
+    // An empty payload still gets one (empty) final chunk, so that every file
+    // carries an authentication tag and the buffered reader agrees.
+    if (index === 0 && chunkCount === 1) {
+      var empty = await sealChunk(keys, prefix, 0, true, new Uint8Array(0), cascade, core);
+      await sink.write(empty);
+      written += empty.length;
+      index = 1;
+    }
+
+    if (index !== chunkCount) {
+      throw new Error('The file changed size while it was being encrypted.');
+    }
+
+    await sink.close();
+    return { recoveryKey: recoveryKey, profile: profile, bytesWritten: written };
+  }
+
+  /**
+   * openStream(file, sink, options) -> {bytesWritten}
+   * `file` is a Blob or File; only one chunk is held at a time.
+   */
+  async function openStream(file, sink, options) {
+    options = options || {};
+
+    // The header is small but variable; 8 KB covers any slot layout.
+    var front = new Uint8Array(await file.slice(0, Math.min(8192, file.size)).arrayBuffer());
+    var header = parseHeader(front);
+    var cascade = !!(header.flags & FLAG_CASCADE);
+
+    if ((header.flags & FLAG_TOKEN) && !options.tokenSecret && !options.recoveryKey) {
+      throw new Error('This file needs its security key.');
+    }
+
+    var slot, material;
+    if (options.recoveryKey) {
+      slot = header.slots.filter(function (s) { return s.type === SLOT_RECOVERY; })[0];
+      if (!slot) throw new Error('This file has no recovery slot.');
+      material = hkdf(options.recoveryKey, slot.salt, 'glintbox/recovery', KEY_BYTES);
+    } else {
+      slot = header.slots.filter(function (s) { return s.type === SLOT_PASSPHRASE; })[0];
+      if (!slot) throw new Error('This file has no passphrase slot.');
+      material = resolveToken(options.tokenSecret, slot.salt).then(function (secret) {
+        return deriveSlotKey(options.passphrase, secret, slot.salt, header.profile);
+      });
+    }
+
+    var dataKey;
+    try {
+      var key = await importAes(await material);
+      dataKey = new Uint8Array(await subtle.decrypt(
+        { name: 'AES-GCM', iv: slot.nonce, additionalData: header.core }, key, slot.wrapped));
+    } catch (e) {
+      throw new Error(options.recoveryKey
+        ? 'That recovery key does not open this file.'
+        : 'Wrong passphrase or security key.');
+    }
+
+    var keys = await payloadKeys(dataKey, cascade);
+    var chunkSize = 1 << header.chunkLog;
+    var chunkCount = Math.max(1, Math.ceil(header.payloadLength / chunkSize));
+    var body = file.slice(header.headerLength);
+    var index = 0;
+    var written = 0;
+
+    for await (var sealed of exactChunks(body.stream(), chunkSize + TAG_BYTES)) {
+      var isFinal = index === chunkCount - 1;
+      var plain;
+      try {
+        plain = await openChunk(keys, header.prefix, index, isFinal, sealed, cascade, header.core);
+      } catch (e) {
+        throw new Error('This file has been altered or damaged (chunk ' + index + ').');
+      }
+      await sink.write(plain);
+      written += plain.length;
+      index++;
+      if (options.onProgress) options.onProgress(index / chunkCount);
+    }
+
+    if (written !== header.payloadLength) throw new Error('This file is truncated.');
+    await sink.close();
+    return { bytesWritten: written };
+  }
+
   /**
    * What does this file require? Readable without any secret, so the UI can
    * prompt correctly (and ask for the right security key) before decrypting.
@@ -451,6 +655,9 @@
   global.GLINTBox = {
     seal: seal,
     open: open,
+    sealStream: sealStream,
+    openStream: openStream,
+    withPrefix: withPrefix,
     inspect: inspect,
     parseHeader: parseHeader,
     PROFILES: PROFILES

@@ -20,10 +20,10 @@ leak.
   and that is information-theoretic — no amount of compute changes it.
 - **Cipher cascade.** ChaCha20 then AES-256-GCM under independent subkeys, so
   a break in one primitive is not a break of the file.
-- **Chunked and authenticated.** The STREAM construction means truncation,
-  reordering and chunk removal all fail authentication. Note the current
-  implementation holds the whole file in memory (see Limits), so size is
-  bounded by RAM, not by disk.
+- **Streams to disk.** Files are encrypted a chunk at a time and written
+  straight out, so memory stays flat regardless of size — 512 MB streams with
+  16 MB of memory growth. The STREAM construction means truncation,
+  reordering and chunk removal all fail authentication.
 - **Strong passphrases by default.** A built-in generator produces 90-bit
   passphrases with provable entropy, and anything under 40 bits is refused
   outright.
@@ -127,6 +127,7 @@ node test/bench.js       # throughput on your hardware
 node test/image.js       # image codec round-trip
 node test/shares.js      # share checksums and file tags
 node test/passphrase.js  # generator entropy and distribution
+node test/stream.js      # streaming, format compatibility, memory
 ```
 
 The interface itself is driven end to end in a real browser with a virtual
@@ -139,9 +140,9 @@ Image mode is exercised in the browser too: a code is made, round-tripped
 through canvas JPEG encoding at quality 90/70/50/30, and decoded back — plus
 the same for a payload hidden in a carrier photo at quality 80.
 
-Current status: **2173 checks passing** — 10 official RFC vectors, 2111
+Current status: **2188 checks passing** — 10 official RFC vectors, 2111
 Shamir checks, 21 container tests, 9 image tests, 9 share tests, 13
-passphrase tests. The PRF path is verified
+passphrase tests, 15 streaming tests. The PRF path is verified
 against a Chrome virtual authenticator with `hasPrf` and confirmed on real
 hardware (YubiKey 5), covering enrolment, determinism, salt separation,
 seal, open, and both refusal cases.
@@ -276,16 +277,25 @@ splitting worthwhile. Only assembling two proves that.
 Shares issued before checksums existed still decode, and are flagged as
 uncheckable.
 
-## Limits
+## Memory and large files
 
-**Memory.** Encryption holds the file, a copy, the sealed chunks and the
-joined result — peak use is roughly **four times the file size**. A 1.5 GB
-file has been encrypted successfully on a machine with plenty of RAM; the
-same file will fail on a small one. The interface warns above 200 MB.
-Removing this needs streaming to disk, which is planned.
+Where the browser can write a file directly (Chrome and Edge, via the File
+System Access API), encryption streams: one chunk is held at a time and the
+ciphertext goes to disk as it is produced. Measured by watching resident
+memory while sealing 512 MB — **peak growth 16 MB**. You are asked where to
+save before it starts.
 
-**An earlier version of this README claimed "any file size, bounded only by
-disk".** That described the format, not the implementation, and was wrong.
+In browsers without that API (Firefox, Safari), the parts are collected into
+a Blob, which the browser can page to disk. Better than one contiguous
+array, but still memory-hungry; the interface says so above 200 MB.
+
+Both paths produce the same format: a streamed file opens with the buffered
+reader and vice versa, which the tests check explicitly.
+
+**Earlier versions of this README claimed "any file size, bounded only by
+disk".** That described the format rather than the implementation, and was
+untrue until streaming landed. The buffered path — still used by the
+fallback — peaks at roughly four times the file size.
 
 ## What this does not protect against
 

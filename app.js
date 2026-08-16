@@ -167,30 +167,31 @@
 
   /* ------------------------------------------------------------- locking */
 
-  // Encryption holds the file, a copy of it, the sealed chunks and the joined
-  // result — so peak memory runs to roughly four times the file size. Warn
-  // before a large file rather than dying halfway through it.
-  var MEMORY_MULTIPLIER = 4;
+  // Where the browser can save a file directly, encryption streams to disk a
+  // chunk at a time and memory stays flat. Without that API the whole file is
+  // held in the tab, so size becomes a memory question.
+  var canStreamToDisk = typeof window.showSaveFilePicker === 'function';
 
   function warnAboutSize(bytes) {
     var warning = $('size-warning');
-    var needed = bytes * MEMORY_MULTIPLIER;
     if (bytes < 200 * 1024 * 1024) { warning.hidden = true; return; }
     warning.hidden = false;
-    warning.textContent = 'This file needs roughly ' + formatSize(needed) +
-      ' of free memory to encrypt, because the whole file is held in the tab. ' +
-      'It works if the machine has room; it fails outright if it does not. ' +
-      'Verified up to 1.5 GB on a machine with plenty of RAM.';
+    warning.textContent = canStreamToDisk
+      ? 'Large file — it will be written straight to disk as it encrypts, so ' +
+        'memory stays flat. You will be asked where to save it.'
+      : 'This browser cannot save straight to disk, so the whole file is held ' +
+        'in the tab and needs roughly ' + formatSize(bytes * 4) + ' of free ' +
+        'memory. Chrome or Edge will stream it instead.';
   }
 
   function stagePlain(file) {
-    readFile(file).then(function (bytes) {
-      state.plainFile = { name: file.name, bytes: bytes };
-      $('lock-drop').textContent = file.name + ' · ' + formatSize(bytes.length);
-      $('lock-drop').classList.add('loaded');
-      warnAboutSize(bytes.length);
-      status($('lock-status'), '');
-    }).catch(function (error) { status($('lock-status'), error.message, 'bad'); });
+    // Keep the File itself: streaming reads from it directly, and reading the
+    // bytes now would defeat the point for anything large.
+    state.plainFile = { name: file.name, file: file, bytes: null };
+    $('lock-drop').textContent = file.name + ' · ' + formatSize(file.size);
+    $('lock-drop').classList.add('loaded');
+    warnAboutSize(file.size);
+    status($('lock-status'), '');
   }
 
   $('lock-file').addEventListener('change', function (event) {
@@ -212,8 +213,7 @@
     }
 
     var source = state.plainFile ||
-      { name: 'message.txt', bytes: new TextEncoder().encode(text) };
-    var payload = wrapPayload(source.name, source.bytes);
+      { name: 'message.txt', bytes: new TextEncoder().encode(text), file: null };
     var useKey = $('use-key').checked;
 
     if (useKey && !state.credential) {
@@ -236,19 +236,79 @@
       options.tokenSecret = tokenProvider(state.credential.credentialId);
     }
 
-    GLINTBox.seal(payload, options)
-      .then(function (result) {
-        var elapsed = (performance.now() - started) / 1000;
-        state.lastResult = result;
-        download(result.file, source.name + '.glintbox');
-        showShares(result.recoveryKey, result.file);
-        status($('lock-status'),
-          'Sealed ' + formatSize(result.file.length) + ' in ' + elapsed.toFixed(1) + ' s. ' +
-          'Downloaded as ' + source.name + '.glintbox', 'good');
-      })
-      .catch(function (error) { status($('lock-status'), error.message, 'bad'); })
-      .then(function () { $('lock').disabled = false; });
+    var finish = function () { $('lock').disabled = false; };
+    var report = function (result, bytes, headerBytes) {
+      var elapsed = (performance.now() - started) / 1000;
+      showShares(result.recoveryKey, headerBytes);
+      status($('lock-status'),
+        'Sealed ' + formatSize(bytes) + ' in ' + elapsed.toFixed(1) + ' s.', 'good');
+    };
+
+    lockWith(options, source, report).catch(function (error) {
+      if (error && error.name === 'AbortError') {
+        status($('lock-status'), 'Cancelled.');
+      } else {
+        status($('lock-status'), error.message, 'bad');
+      }
+    }).then(finish);
   });
+
+  // Streams the file through the encryptor and onto disk. The filename
+  // envelope is prepended to the stream rather than copied in front of the
+  // whole payload.
+  async function lockWith(options, source, report) {
+    var envelope = wrapPayload(source.name, new Uint8Array(0));
+    var length = envelope.length + (source.file ? source.file.size : source.bytes.length);
+    var body = source.file ? source.file.stream() : new Blob([source.bytes]).stream();
+    var input = { stream: GLINTBox.withPrefix(envelope, body), length: length };
+
+    if (canStreamToDisk) {
+      var handle = await window.showSaveFilePicker({
+        suggestedName: source.name + '.glintbox',
+        types: [{ description: 'GLINT container', accept: { 'application/octet-stream': ['.glintbox'] } }]
+      });
+      var writable = await handle.createWritable();
+
+      // The header is needed afterwards to tag the recovery shares, so keep a
+      // copy of the first write — it is a couple of hundred bytes.
+      var headerBytes = null;
+      var sink = {
+        write: function (chunk) {
+          if (!headerBytes) headerBytes = Uint8Array.from(chunk);
+          return writable.write(chunk);
+        },
+        close: function () { return writable.close(); }
+      };
+      var result = await GLINTBox.sealStream(input, sink, options);
+      report(result, result.bytesWritten, headerBytes);
+      return;
+    }
+
+    // Fallback: collect the parts as a Blob, which browsers can page to disk,
+    // rather than one enormous contiguous array.
+    var parts = [];
+    var first = null;
+    var collected = {
+      write: function (chunk) {
+        var copy = Uint8Array.from(chunk);
+        if (!first) first = copy;
+        parts.push(copy);
+        return Promise.resolve();
+      },
+      close: function () { return Promise.resolve(); }
+    };
+    var streamed = await GLINTBox.sealStream(input, collected, options);
+    var blob = new Blob(parts, { type: 'application/octet-stream' });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = source.name + '.glintbox';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    report(streamed, streamed.bytesWritten, first);
+  }
 
   /* -------------------------------------------------------------- shares */
 
@@ -278,7 +338,7 @@
     var container = $('shares');
     container.innerHTML = '';
 
-    var core = GLINTBox.parseHeader(fileBytes).core;
+    var core = GLINTBox.parseHeader(fileBytes).core;   // header bytes suffice
     GLINTShamir.fileTag(core).then(function (tag) { renderShares(shares, tag); });
   }
 
@@ -313,7 +373,7 @@
 
   function stageSealed(file) {
     readFile(file).then(function (bytes) {
-      state.sealedFile = { name: file.name, bytes: bytes };
+      state.sealedFile = { name: file.name, bytes: bytes, file: file };
       var info;
       try {
         info = GLINTBox.inspect(bytes);
@@ -384,16 +444,10 @@
       status($('unlock-status'), 'Decrypting… ' + Math.round(fraction * 100) + '%');
     };
 
-    GLINTBox.open(state.sealedFile.bytes, options)
-      .then(function (payload) {
-        var elapsed = (performance.now() - started) / 1000;
-        var original = unwrapPayload(payload);
-        download(original.bytes, original.name);
-        status($('unlock-status'),
-          'Opened in ' + elapsed.toFixed(1) + ' s. Downloaded as ' + original.name, 'good');
-      })
-      .catch(function (error) { status($('unlock-status'), error.message, 'bad'); })
-      .then(function () { $('unlock').disabled = false; });
+    unlockWith(options, started).catch(function (error) {
+      if (error && error.name === 'AbortError') status($('unlock-status'), 'Cancelled.');
+      else status($('unlock-status'), error.message, 'bad');
+    }).then(function () { $('unlock').disabled = false; });
   });
 
   /* --------------------------------------------------------- image mode */
@@ -520,6 +574,66 @@
       })
       .then(function () { $('img-decode').disabled = false; });
   });
+
+  // The original filename is the first few bytes of the decrypted stream, but
+  // the save dialog needs a name before decryption starts — so the envelope is
+  // stripped on the way through and the suggested name comes from the
+  // container's own filename.
+  function envelopeStrippingSink(inner) {
+    var pending = new Uint8Array(0);
+    var skipped = false;
+    var toSkip = 0;
+
+    function append(a, b) {
+      var out = new Uint8Array(a.length + b.length);
+      out.set(a, 0); out.set(b, a.length);
+      return out;
+    }
+
+    return {
+      write: function (chunk) {
+        if (skipped) return inner.write(chunk);
+        pending = append(pending, chunk);
+        if (pending.length < 6) return Promise.resolve();
+        if (!toSkip) {
+          var view = new DataView(pending.buffer, pending.byteOffset, pending.byteLength);
+          toSkip = view.getUint32(0) === ENVELOPE_MAGIC ? 6 + view.getUint16(4) : 0;
+          if (!toSkip) { skipped = true; var all = pending; pending = null; return inner.write(all); }
+        }
+        if (pending.length < toSkip) return Promise.resolve();
+        skipped = true;
+        var rest = pending.slice(toSkip);
+        pending = null;
+        return rest.length ? inner.write(rest) : Promise.resolve();
+      },
+      close: function () { return inner.close(); }
+    };
+  }
+
+  async function unlockWith(options, started) {
+    var sealedName = state.sealedFile.name.replace(/\.glintbox$/i, '') || 'recovered';
+
+    if (canStreamToDisk) {
+      var handle = await window.showSaveFilePicker({ suggestedName: sealedName });
+      var writable = await handle.createWritable();
+      var sink = envelopeStrippingSink({
+        write: function (chunk) { return writable.write(chunk); },
+        close: function () { return writable.close(); }
+      });
+      var result = await GLINTBox.openStream(state.sealedFile.file, sink, options);
+      status($('unlock-status'),
+        'Opened ' + formatSize(result.bytesWritten) + ' in ' +
+        ((performance.now() - started) / 1000).toFixed(1) + ' s.', 'good');
+      return;
+    }
+
+    var payload = await GLINTBox.open(state.sealedFile.bytes, options);
+    var original = unwrapPayload(payload);
+    download(original.bytes, original.name);
+    status($('unlock-status'),
+      'Opened in ' + ((performance.now() - started) / 1000).toFixed(1) +
+      ' s. Downloaded as ' + original.name, 'good');
+  }
 
   /* -------------------------------------------------------- share checker */
 
