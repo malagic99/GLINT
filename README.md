@@ -128,7 +128,14 @@ node test/image.js       # image codec round-trip
 node test/shares.js      # share checksums and file tags
 node test/passphrase.js  # generator entropy and distribution
 node test/stream.js      # streaming, format compatibility, memory
+node test/coverage.js    # every suite is actually wired into CI
 ```
+
+That last one exists because of a real failure: for two commits the workflow
+ran four suites while seven were present, so CI was green while enforcing
+2147 of 2188 checks. A missing test cannot fail, which makes it invisible in
+a pass/fail signal. The guard turns an unwired suite into a build failure,
+and it runs first.
 
 The interface itself is driven end to end in a real browser with a virtual
 authenticator: enrol, lock a file, unlock it with passphrase and key, unlock
