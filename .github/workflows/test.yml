@@ -25,3 +25,12 @@ jobs:
         run: node test/container.js
       - name: Image codec round-trip
         run: node test/image.js
+
+      - name: Recovery share checksums
+        run: node test/shares.js
+
+      - name: Passphrase generator
+        run: node test/passphrase.js
+
+      - name: Streaming and memory
+        run: node test/stream.js
