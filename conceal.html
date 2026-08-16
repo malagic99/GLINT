@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GLINT Concealer — hide encrypted data inside a photo</title>
+  <meta name="description" content="Hide an encrypted message or file inside a photograph. The change is imperceptible and survives JPEG recompression. Runs entirely in your browser." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2304050d'/%3E%3Cpath d='M8 3.2 12.4 6v4L8 12.8 3.6 10V6z' fill='none' stroke='%23EABA01' stroke-width='1.3'/%3E%3Ccircle cx='8' cy='8' r='1.6' fill='%23FD0B04'/%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #04050d; --elev: #0b0e1b; --input: #0a0c17;
+      --line: rgba(255,255,255,.10); --soft: rgba(255,255,255,.06);
+      --text: #f2f0ea; --muted: #a4a2b6; --dim: #6f6d83;
+      --good: #7ee787; --bad: #ff9d94;
+      --grad: linear-gradient(120deg, #EABA01 0%, #FD0B04 36%, #752A90 71%, #060C83 100%);
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      margin: 0; padding: 44px 20px 64px;
+      background:
+        radial-gradient(900px 620px at 85% -12%, rgba(117,42,144,.22), transparent 62%),
+        radial-gradient(760px 520px at -8% 20%, rgba(253,11,4,.10), transparent 60%), var(--bg);
+      background-attachment: fixed; color: var(--text);
+      font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    main { max-width: 780px; margin: 0 auto; }
+    h1 {
+      font-size: clamp(1.9rem, 5vw, 2.6rem); margin: 0 0 10px; letter-spacing: -.01em;
+      background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .lede { color: var(--muted); margin: 0 0 12px; }
+    .lede em { color: var(--text); font-style: normal; font-weight: 600; }
+    .panel { background: var(--elev); border: 1px solid var(--line); border-radius: 14px; padding: 22px; margin-bottom: 18px; }
+    h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .12em; color: var(--dim); margin: 0 0 16px; }
+    .drop {
+      display: block; text-align: center; cursor: pointer; padding: 28px 18px; margin-bottom: 16px;
+      color: var(--muted); font-size: .95rem; background: var(--input);
+      border: 1.5px dashed rgba(255,255,255,.18); border-radius: 12px;
+    }
+    .drop:hover, .drop.over { border-color: rgba(255,255,255,.4); color: var(--text); }
+    .drop.loaded { color: var(--good); border-style: solid; border-color: rgba(126,231,135,.4); }
+    .hidden-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    label.field { display: block; margin-bottom: 16px; }
+    label.field > span { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
+    input[type="password"], textarea, select {
+      width: 100%; font: inherit; font-size: .95rem; color: var(--text); background: var(--input);
+      border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px;
+    }
+    textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .84rem; }
+    select { appearance: none; cursor: pointer; }
+    select option { background: var(--elev); }
+    input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, .drop:focus-visible {
+      outline: 2px solid #EABA01; outline-offset: 2px;
+    }
+    button {
+      font: inherit; font-size: .95rem; font-weight: 500; color: var(--text); cursor: pointer;
+      background: transparent; border: 1px solid var(--line); border-radius: 10px; padding: 11px 20px;
+    }
+    button:hover:not(:disabled) { border-color: rgba(255,255,255,.28); background: rgba(255,255,255,.04); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.primary { color: #fff; border-color: transparent; background: var(--grad); }
+    button.small { font-size: .85rem; padding: 8px 14px; }
+    .status { font-size: .88rem; color: var(--muted); margin: 14px 0 0; min-height: 1.4em; }
+    .status.good { color: var(--good); } .status.bad { color: var(--bad); }
+    .facts { font-size: .82rem; color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 0 16px; }
+    .compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 18px 0 12px; }
+    .compare figure { margin: 0; }
+    .compare figcaption { font-size: .76rem; color: var(--dim); margin-top: 6px; text-align: center; }
+    canvas { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: #000; }
+    .metrics { font-size: .84rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: var(--input); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 4px 0 14px; white-space: pre-wrap; }
+    .note { font-size: .86rem; color: var(--muted); border-left: 2px solid rgba(234,186,1,.5); padding: 2px 0 2px 14px; margin: 0 0 18px; }
+    .note strong { color: var(--text); }
+    footer { font-size: .82rem; color: var(--dim); text-align: center; margin-top: 28px; }
+    a { color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Concealer</h1>
+  <p class="lede">
+    Hides an encrypted message or file <em>inside</em> a photograph. The picture
+    still looks like the picture, and the payload survives being re-saved as JPEG.
+  </p>
+
+  <p class="note">
+    <strong>Compression is fine; geometry is fatal.</strong> Re-saving, re-compressing
+    and emailing the file all work. Resizing, cropping or rotating destroy the payload —
+    so send the file itself, not a photo through a service that shrinks it.
+  </p>
+
+  <section class="panel">
+    <h2>Hide something</h2>
+
+    <label class="drop" id="photo-drop" for="photo">Drop the photograph to hide data inside</label>
+    <input type="file" id="photo" class="hidden-input" accept="image/*" />
+    <p class="facts" id="photo-facts" hidden></p>
+
+    <label class="field">
+      <span>Message</span>
+      <textarea id="secret" rows="3" placeholder="A recovery share, a passphrase, a note…"></textarea>
+    </label>
+
+    <label class="drop" id="file-drop" for="payload-file">…or drop a small file to hide instead</label>
+    <input type="file" id="payload-file" class="hidden-input" />
+
+    <label class="field">
+      <span>Passphrase</span>
+      <input type="password" id="pass" autocomplete="new-password" />
+    </label>
+
+    <label class="field">
+      <span>How hard to hide it</span>
+      <select id="strength">
+        <option value="10">Subtle — least visible, needs a good-quality save</option>
+        <option value="18" selected>Balanced — invisible in practice, survives JPEG q40</option>
+        <option value="28">Robust — faint texture, survives heavy compression</option>
+      </select>
+    </label>
+
+    <button type="button" class="primary" id="hide">Conceal</button>
+    <p class="status" id="hide-status"></p>
+
+    <div id="result" hidden>
+      <div class="compare">
+        <figure><canvas id="before"></canvas><figcaption>Original</figcaption></figure>
+        <figure><canvas id="after"></canvas><figcaption>With payload hidden</figcaption></figure>
+        <figure><canvas id="diff"></canvas><figcaption>Difference, amplified 20×</figcaption></figure>
+      </div>
+      <p class="metrics" id="metrics"></p>
+      <button type="button" class="small" id="save">Download PNG</button>
+      <button type="button" class="small" id="verify">Verify it reads back</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Reveal something</h2>
+    <label class="drop" id="reveal-drop" for="reveal-file">Drop an image that has data hidden in it</label>
+    <input type="file" id="reveal-file" class="hidden-input" accept="image/*" />
+    <label class="field">
+      <span>Passphrase</span>
+      <input type="password" id="reveal-pass" autocomplete="current-password" />
+    </label>
+    <button type="button" id="reveal">Reveal</button>
+    <p class="status" id="reveal-status"></p>
+    <textarea id="revealed" rows="4" readonly hidden></textarea>
+    <button type="button" class="small" id="save-revealed" hidden>Download the hidden file</button>
+  </section>
+
+  <footer>
+    Encrypted with AES-256-GCM before hiding — the photo reveals nothing without the
+    passphrase. Nothing is uploaded. <a href="index.html">Back to GLINT</a>
+  </footer>
+</main>
+
+<script src="glint.js"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { photo: null, payloadFile: null, output: null, reveal: null, revealedFile: null };
+
+  var ENVELOPE = 0x47463101;
+
+  function wrap(name, bytes) {
+    var n = new TextEncoder().encode(name || '');
+    var out = new Uint8Array(6 + n.length + bytes.length);
+    var v = new DataView(out.buffer);
+    v.setUint32(0, ENVELOPE); v.setUint16(4, n.length);
+    out.set(n, 6); out.set(bytes, 6 + n.length);
+    return out;
+  }
+
+  function unwrap(bytes) {
+    if (bytes.length < 6) return { name: null, bytes: bytes };
+    var v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (v.getUint32(0) !== ENVELOPE) return { name: null, bytes: bytes };
+    var len = v.getUint16(4);
+    return {
+      name: new TextDecoder().decode(bytes.subarray(6, 6 + len)) || null,
+      bytes: bytes.slice(6 + len)
+    };
+  }
+
+  function status(el, text, kind) {
+    el.textContent = text;
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function loadPixels(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        var ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        resolve(ctx.getImageData(0, 0, c.width, c.height));
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Could not read that image.')); };
+      img.src = url;
+    });
+  }
+
+  function draw(canvas, imageData) {
+    canvas.width = imageData.width; canvas.height = imageData.height;
+    canvas.getContext('2d').putImageData(imageData, 0, 0);
+  }
+
+  function readBytes(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(new Uint8Array(r.result)); };
+      r.onerror = function () { reject(new Error('Could not read that file.')); };
+      r.readAsArrayBuffer(file);
+    });
+  }
+
+  function download(bytes, name, type) {
+    var url = URL.createObjectURL(new Blob([bytes], { type: type || 'application/octet-stream' }));
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /* ------------------------------------------------------------- staging */
+
+  function stagePhoto(file) {
+    loadPixels(file).then(function (data) {
+      state.photo = data;
+      var room = GLINT.capacity(data.width, data.height, 64);
+      $('photo-drop').textContent = file.name;
+      $('photo-drop').classList.add('loaded');
+      $('photo-facts').hidden = false;
+      $('photo-facts').textContent = data.width + '×' + data.height +
+        ' · room for about ' + (room > 1024 ? (room / 1024).toFixed(1) + ' KB' : room + ' bytes') +
+        ' of hidden data';
+      status($('hide-status'), '');
+    }).catch(function (e) { status($('hide-status'), e.message, 'bad'); });
+  }
+
+  function stagePayload(file) {
+    readBytes(file).then(function (bytes) {
+      state.payloadFile = { name: file.name, bytes: bytes };
+      $('file-drop').textContent = file.name + ' · ' + bytes.length + ' bytes will be hidden';
+      $('file-drop').classList.add('loaded');
+    }).catch(function (e) { status($('hide-status'), e.message, 'bad'); });
+  }
+
+  function stageReveal(file) {
+    loadPixels(file).then(function (data) {
+      state.reveal = data;
+      $('reveal-drop').textContent = file.name + ' · ' + data.width + '×' + data.height;
+      $('reveal-drop').classList.add('loaded');
+      status($('reveal-status'), '');
+    }).catch(function (e) { status($('reveal-status'), e.message, 'bad'); });
+  }
+
+  $('photo').addEventListener('change', function (e) { if (e.target.files[0]) stagePhoto(e.target.files[0]); });
+  $('payload-file').addEventListener('change', function (e) { if (e.target.files[0]) stagePayload(e.target.files[0]); });
+  $('reveal-file').addEventListener('change', function (e) { if (e.target.files[0]) stageReveal(e.target.files[0]); });
+
+  [['photo-drop', stagePhoto], ['file-drop', stagePayload], ['reveal-drop', stageReveal]].forEach(function (pair) {
+    var zone = $(pair[0]);
+    ['dragenter', 'dragover'].forEach(function (n) {
+      zone.addEventListener(n, function (e) { e.preventDefault(); zone.classList.add('over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (n) {
+      zone.addEventListener(n, function (e) { e.preventDefault(); zone.classList.remove('over'); });
+    });
+    zone.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) pair[1](e.dataTransfer.files[0]); });
+  });
+
+  /* -------------------------------------------------------------- hiding */
+
+  // Amplified difference, so you can see exactly what changed and where.
+  function differenceView(before, after) {
+    var out = new ImageData(before.width, before.height);
+    for (var i = 0; i < before.data.length; i += 4) {
+      for (var c = 0; c < 3; c++) {
+        out.data[i + c] = Math.min(255, Math.abs(after.data[i + c] - before.data[i + c]) * 20);
+      }
+      out.data[i + 3] = 255;
+    }
+    return out;
+  }
+
+  function quality(before, after) {
+    var mse = 0, worstFlat = 0, count = 0;
+    var w = before.width, h = before.height;
+    for (var by = 0; by + 8 <= h; by += 8) {
+      for (var bx = 0; bx + 8 <= w; bx += 8) {
+        var sum = 0, y, x, i;
+        for (y = 0; y < 8; y++) for (x = 0; x < 8; x++) sum += before.data[((by + y) * w + bx + x) * 4];
+        var mean = sum / 64, dev = 0;
+        for (y = 0; y < 8; y++) for (x = 0; x < 8; x++) {
+          dev += Math.abs(before.data[((by + y) * w + bx + x) * 4] - mean);
+        }
+        var flat = dev / 64 < 2;
+        for (y = 0; y < 8; y++) for (x = 0; x < 8; x++) {
+          i = ((by + y) * w + bx + x) * 4;
+          var d = after.data[i] - before.data[i];
+          mse += d * d; count++;
+          if (flat && Math.abs(d) > worstFlat) worstFlat = Math.abs(d);
+        }
+      }
+    }
+    return {
+      psnr: 10 * Math.log10(255 * 255 / (mse / Math.max(1, count))),
+      worstFlat: worstFlat
+    };
+  }
+
+  $('hide').addEventListener('click', function () {
+    if (!state.photo) return status($('hide-status'), 'Drop a photograph first.', 'bad');
+    var text = $('secret').value;
+    if (!text && !state.payloadFile) {
+      return status($('hide-status'), 'Type a message or drop a file to hide.', 'bad');
+    }
+    var passphrase = $('pass').value;
+    if (passphrase.length < 8) {
+      return status($('hide-status'), 'Use a passphrase of at least 8 characters.', 'bad');
+    }
+
+    var payload = state.payloadFile
+      ? wrap(state.payloadFile.name, state.payloadFile.bytes)
+      : wrap('', new TextEncoder().encode(text));
+
+    $('hide').disabled = true;
+    status($('hide-status'), 'Encrypting and hiding…');
+
+    GLINT.encode(payload, passphrase, {
+      carrier: { rgba: state.photo.data, width: state.photo.width, height: state.photo.height },
+      amplitude: Number($('strength').value),
+      adaptive: true
+    }).then(function (result) {
+      var after = new ImageData(result.rgba, result.width, result.height);
+      state.output = after;
+      draw($('before'), state.photo);
+      draw($('after'), after);
+      draw($('diff'), differenceView(state.photo, after));
+      var q = quality(state.photo, after);
+      $('metrics').textContent =
+        'PSNR ' + q.psnr.toFixed(1) + ' dB  (above 35 is generally imperceptible)\n' +
+        'Worst change in a flat area: ' + q.worstFlat + ' of 255\n' +
+        'Hidden: ' + payload.length + ' bytes in a ' + result.width + '×' + result.height + ' image';
+      $('result').hidden = false;
+      status($('hide-status'), 'Done. Save it as PNG — never as JPEG from here, or you ' +
+        'stack one compression on another.', 'good');
+    }).catch(function (e) {
+      status($('hide-status'), e.message, 'bad');
+    }).then(function () { $('hide').disabled = false; });
+  });
+
+  $('save').addEventListener('click', function () {
+    var c = document.createElement('canvas');
+    c.width = state.output.width; c.height = state.output.height;
+    c.getContext('2d').putImageData(state.output, 0, 0);
+    c.toBlob(function (blob) {
+      var r = new FileReader();
+      r.onload = function () { download(new Uint8Array(r.result), 'concealed.png', 'image/png'); };
+      r.readAsArrayBuffer(blob);
+    }, 'image/png');
+  });
+
+  // Read it straight back out of the pixels we just produced.
+  $('verify').addEventListener('click', function () {
+    $('verify').disabled = true;
+    status($('hide-status'), 'Reading it back…');
+    GLINT.decode(state.output, $('pass').value)
+      .then(function (result) {
+        var original = state.payloadFile
+          ? state.payloadFile.bytes.length
+          : new TextEncoder().encode($('secret').value).length;
+        var got = unwrap(result.bytes);
+        status($('hide-status'),
+          'Verified: ' + got.bytes.length + ' of ' + original + ' bytes read back' +
+          (result.corrected ? ' (' + result.corrected + ' repaired)' : ' cleanly') + '.',
+          got.bytes.length === original ? 'good' : 'bad');
+      })
+      .catch(function (e) { status($('hide-status'), 'Verify failed: ' + e.message, 'bad'); })
+      .then(function () { $('verify').disabled = false; });
+  });
+
+  /* ------------------------------------------------------------ revealing */
+
+  $('reveal').addEventListener('click', function () {
+    if (!state.reveal) return status($('reveal-status'), 'Drop an image first.', 'bad');
+    $('reveal').disabled = true;
+    status($('reveal-status'), 'Looking…');
+    GLINT.decode(state.reveal, $('reveal-pass').value)
+      .then(function (result) {
+        var got = unwrap(result.bytes);
+        if (got.name) {
+          state.revealedFile = got;
+          $('save-revealed').hidden = false;
+          $('revealed').hidden = true;
+          status($('reveal-status'), 'Found a hidden file: ' + got.name +
+            ' (' + got.bytes.length + ' bytes)' +
+            (result.corrected ? ', repairing ' + result.corrected + ' damaged bytes' : ''), 'good');
+        } else {
+          $('save-revealed').hidden = true;
+          $('revealed').hidden = false;
+          $('revealed').value = new TextDecoder().decode(got.bytes);
+          status($('reveal-status'), result.corrected
+            ? 'Found it, repairing ' + result.corrected + ' damaged bytes on the way.'
+            : 'Found it, undamaged.', 'good');
+        }
+      })
+      .catch(function (e) {
+        $('revealed').hidden = true;
+        $('save-revealed').hidden = true;
+        status($('reveal-status'), e.message, 'bad');
+      })
+      .then(function () { $('reveal').disabled = false; });
+  });
+
+  $('save-revealed').addEventListener('click', function () {
+    download(state.revealedFile.bytes, state.revealedFile.name);
+  });
+})();
+</script>
+</body>
+</html>

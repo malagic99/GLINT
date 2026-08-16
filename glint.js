@@ -241,6 +241,36 @@
     return sum;
   }
 
+  // How busy is this block? Mean absolute deviation from the block's own mean.
+  // Texture masks our signal; flat areas expose it.
+  function blockActivity(luma, stride, ox, oy) {
+    var sum = 0, y, x;
+    for (y = 0; y < BLOCK; y++) {
+      for (x = 0; x < BLOCK; x++) sum += luma[(oy + y) * stride + ox + x];
+    }
+    var mean = sum / (BLOCK * BLOCK);
+    var deviation = 0;
+    for (y = 0; y < BLOCK; y++) {
+      for (x = 0; x < BLOCK; x++) {
+        deviation += Math.abs(luma[(oy + y) * stride + ox + x] - mean);
+      }
+    }
+    return { mean: mean, activity: deviation / (BLOCK * BLOCK) };
+  }
+
+  // Per-block amplitude: quiet where the eye would notice, louder where
+  // texture hides it. The decoder reads the SIGN of each coefficient, so it
+  // never needs to know what amplitude was used — this costs nothing to undo.
+  function adaptiveAmplitude(base, stats) {
+    var busy = Math.min(1, stats.activity / 14);
+    var amount = base * (0.55 + 1.05 * busy);
+    // Near black or white, a large excursion would clip and be destroyed on
+    // the way back, so ease off at both ends of the range.
+    var headroom = Math.min(stats.mean, 255 - stats.mean) / 40;
+    if (headroom < 1) amount *= Math.max(0.35, headroom);
+    return amount;
+  }
+
   function modulateBlock(luma, stride, ox, oy, carrier, amount) {
     for (var y = 0; y < BLOCK; y++) {
       for (var x = 0; x < BLOCK; x++) {
@@ -453,16 +483,31 @@
         var bits = bytesToBits(coded);
         var grid = layout(width, height);
 
+        var adaptive = opts.adaptive !== false;
         for (var cell = 0; cell < grid.cells; cell++) {
           var ox = (cell % grid.cols) * BLOCK;
           var oy = Math.floor(cell / grid.cols) * BLOCK;
+          var cellAmplitude = amplitude;
+          if (adaptive) {
+            cellAmplitude = adaptiveAmplitude(
+              amplitude, blockActivity(planes.luma, width, ox, oy));
+          }
           for (var c = 0; c < CARRIERS.length; c++) {
             var bitIndex = cell * CARRIERS.length + c;
             // Pad past the payload with alternating bits so the texture stays
             // uniform and gives no clue where the data ends.
             var bit = bitIndex < bits.length ? bits[bitIndex] : (bitIndex & 1);
             var current = projectBlock(planes.luma, width, ox, oy, CARRIERS[c]);
-            var target = (bit ? 1 : -1) * amplitude;
+            var wanted = bit ? 1 : -1;
+
+            // The decoder only reads the sign, so a coefficient that already
+            // has the right sign and enough magnitude needs no change at all.
+            // Roughly half of them do, and forcing every one to exactly
+            // +-amplitude was dragging large coefficients across zero — a much
+            // bigger edit than anything required.
+            if (current * wanted >= cellAmplitude) continue;
+
+            var target = wanted * cellAmplitude;
             modulateBlock(planes.luma, width, ox, oy, CARRIERS[c], target - current);
           }
         }
