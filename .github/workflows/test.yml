@@ -15,6 +15,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Every test suite is wired into CI
+        run: node test/coverage.js
+
       - name: RFC test vectors (scrypt, ChaCha20-Poly1305)
         run: node test/vectors.js
 
@@ -23,6 +26,7 @@ jobs:
 
       - name: Container round-trip, tamper and recovery
         run: node test/container.js
+
       - name: Image codec round-trip
         run: node test/image.js
 
